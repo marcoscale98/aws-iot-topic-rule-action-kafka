@@ -1,0 +1,450 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Stack per VPC + MSK Standard + AWS IoT Rule -> MSK
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 13.0.0.0/16
+    Description: CIDR block per la VPC
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 13.0.2.0/24
+    Description: CIDR per la Subnet Pubblica 1
+
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 13.0.3.0/24
+    Description: CIDR per la Subnet Pubblica 2
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 13.0.0.0/24
+    Description: CIDR per subnet AZ1
+
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 13.0.1.0/24
+    Description: CIDR per subnet AZ2
+
+  ClusterName:
+    Type: String
+    Default: ProvaIoTMskCluster
+    Description: Nome del cluster MSK standard
+
+  KafkaTopic:
+    Type: String
+    Default: prova/data
+    Description: Topic Kafka
+
+  KafkaVersion:
+    Type: String
+    Default: '3.6.0'
+    Description: Versione di Apache Kafka
+
+  BrokerInstanceType:
+    Type: String
+    Default: kafka.m5.large
+    Description: Tipo di istanza per i broker MSK
+
+  BrokerCount:
+    Type: Number
+    Default: 2
+    Description: Numero di broker nel cluster (uno per subnet/AZ)
+
+  BrokerEBSVolumeSize:
+    Type: Number
+    Default: 100
+    Description: Dimensione del volume EBS (GB) per broker
+
+  IotRuleName:
+    Type: String
+    Default: ProvaIoTToMSKRule
+    Description: Nome della Topic Rule AWS IoT
+
+  IotTopic:
+    Type: String
+    Default: prova/data
+    Description: Topic AWS IoT
+
+  # Segreti (usa lo script secrets_generation.sh per generarli)
+  # - KeystoreBase64: il contenuto del tuo keystore JKS (certificato + chiave privata) codificato in base64.
+  KeystoreBase64:
+    Type: String
+    Description: Contenuto base64 del keystore JKS (cert+key)
+  # - KeystorePassword: la password usata per proteggere il keystore.
+  KeystorePassword:
+    Type: String
+    NoEcho: true
+    Description: Password del keystore
+
+Resources:
+  ## VPC e Subnet
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-VPC"
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-IGW"
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+      # No Tags
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PrivateSubnet1"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PrivateSubnet2"
+
+  MSKSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Accesso al cluster MSK
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9092
+          ToPort: 9092
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 9094
+          ToPort: 9094
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-MSKSecurityGroup"
+
+  # Subnet Pubblica 1
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PublicSubnet1"
+
+  # Subnet Pubblica 2
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PublicSubnet2"
+
+  # Route Table Pubblica
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PublicRouteTable"
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      # No Tags
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+      # No Tags
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+      # No Tags
+
+  # Elastic IP per NAT Gateway
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-NatEIP"
+
+  # NAT Gateway
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-NATGateway"
+
+  # Route Table Privata
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PrivateRouteTable"
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+      # No Tags
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+      # No Tags
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+      # No Tags
+
+  ### Secrets Manager ###
+  KeystoreSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-Keystore"
+      Description: "Keystore JKS base64 per IoT Core"
+      SecretString: !Sub |
+        { "keystore": "${KeystoreBase64}",
+          "keystorePassword": "${KeystorePassword}" }
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-Keystore"
+
+  KafkaConfiguration:
+    Type: AWS::MSK::Configuration
+    Properties:
+      Name: !Sub "${AWS::StackName}-ConfigWithTopicAutoCreation"
+      KafkaVersionsList:
+        - 3.6.0
+      ServerProperties: |
+        auto.create.topics.enable=true
+        num.partitions=1
+      # no tags
+
+  MskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${ClusterName}-LogGroup"
+      RetentionInDays: 14
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-LogGroup"
+
+  ## Cluster MSK Standard
+  MskCluster:
+    Type: AWS::MSK::Cluster
+    DependsOn: KafkaConfiguration
+    Properties:
+      ClusterName: !Ref ClusterName
+      KafkaVersion: !Ref KafkaVersion
+      NumberOfBrokerNodes: !Ref BrokerCount
+      # Configuration with auto-create topic enabled
+      ConfigurationInfo:
+        Arn: !Ref KafkaConfiguration
+        Revision: !GetAtt KafkaConfiguration.LatestRevision.Revision
+      BrokerNodeGroupInfo:
+        InstanceType: !Ref BrokerInstanceType
+        ClientSubnets:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        SecurityGroups:
+          - !Ref MSKSecurityGroup
+        StorageInfo:
+            EBSStorageInfo:
+              VolumeSize: !Ref BrokerEBSVolumeSize
+      LoggingInfo:
+        BrokerLogs:
+          CloudWatchLogs:
+            Enabled: true
+            LogGroup: !Ref MskLogGroup
+      EncryptionInfo:
+        EncryptionInTransit:
+          ClientBroker: TLS
+          InCluster: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-MSKCluster"
+
+  ## Ruolo per ENI di AWS IoT Core (TopicRuleDestination)
+  IoTVpcDestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${IotRuleName}-IoTVpcDestRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: KafkaManagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                  - ec2:CreateNetworkInterfacePermission
+                  - ec2:DescribeVpcAttribute
+                  - ec2:AttachNetworkInterface
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - kafka:DescribeCluster
+                  - kafka:GetBootstrapBrokers
+                  - kafka:WriteData
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:Get*
+                  - secretsmanager:Describe*
+                  - secretsmanager:List*
+                  - secretsmanager:Validate*
+                  - secretsmanager:BatchGet*
+                Resource:
+                  - !Ref KeystoreSecret
+        - PolicyName: SQSManagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:Get*
+                  - sqs:List*
+                  - sqs:Describe*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sqs:Put*
+                Resource: !GetAtt SQSActionErrors.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-IoTVpcDestRole"
+
+  IoTVpcDestination:
+    Type: AWS::IoT::TopicRuleDestination
+    Properties:
+      Status: ENABLED
+      VpcProperties:
+        RoleArn: !Ref IoTVpcDestRole
+        SecurityGroups:
+          - !Ref MSKSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        VpcId: !Ref VPC
+
+  IotTopicRule:
+    Type: AWS::IoT::TopicRule
+    DependsOn: IoTVpcDestination
+    Properties:
+      RuleName: !Sub "${AWS::StackName}-${IotRuleName}"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${IotRuleName}"
+      TopicRulePayload:
+        RuleDisabled: false
+        ErrorAction:
+          Sqs:
+            RoleArn: !Ref IoTVpcDestRole
+            UseBase64: false
+            QueueUrl: !Ref SQSActionErrors
+        Description: "Topic Rule con Action Kafka e ErrorAction SQS"
+        AwsIotSqlVersion: "2016-03-23"
+        Actions:
+          - Kafka:
+              ClientProperties:
+                compression.type: "none"
+                security.protocol: "SSL"
+                value.serializer: "org.apache.kafka.common.serialization.ByteBufferSerializer"
+                ssl.keystore.password: !Sub "${get_secret(\"${AWS::StackName}-Keystore\"\
+                , \"SecretString\", \"keystorePassword\", \"${IoTVpcDestRole}\"\
+                )}"
+                acks: "1"
+                bootstrap.servers: "<da-recuperare-con-chiamata-da-CLI>"
+                ssl.keystore: "${get_secret(\"${AWS::StackName}-Keystore\", \"SecretString\"\
+                , \"keystore\", \"${IoTVpcDestRole}\"\
+                )}"
+                key.serializer: "org.apache.kafka.common.serialization.StringSerializer"
+              Topic: !Ref KafkaTopic
+              Headers: [ ]
+              DestinationArn: !Ref IoTVpcDestination
+        Sql: !Sub "SELECT * FROM ${IotTopic}"
+
+
+  SQSActionErrors:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-SQSActionErrors"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-SQSActionErrors"
+
+Outputs:
+  MSKClusterArn:
+    Description: Arn del cluster MSK standard
+    Value: !GetAtt MskCluster.Arn
