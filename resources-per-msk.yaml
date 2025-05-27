@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Stack per VPC + MSK Standard + AWS IoT Rule -> MSK
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 13.0.0.0/16
+    Description: CIDR block per la VPC
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 13.0.2.0/24
+    Description: CIDR per la Subnet Pubblica 1
+
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 13.0.3.0/24
+    Description: CIDR per la Subnet Pubblica 2
+
+  Subnet1Cidr:
+    Type: String
+    Default: 13.0.0.0/24
+    Description: CIDR per subnet AZ1
+
+  Subnet2Cidr:
+    Type: String
+    Default: 13.0.1.0/24
+    Description: CIDR per subnet AZ2
+
+  ClusterName:
+    Type: String
+    Default: ProvaIoTMSKCluster2
+    Description: Nome del cluster MSK standard
+
+  KafkaVersion:
+    Type: String
+    Default: '3.6.0'
+    Description: Versione di Apache Kafka
+
+  BrokerInstanceType:
+    Type: String
+    Default: kafka.m5.large
+    Description: Tipo di istanza per i broker MSK
+
+  BrokerCount:
+    Type: Number
+    Default: 2
+    Description: Numero di broker nel cluster (uno per subnet/AZ)
+
+  BrokerEBSVolumeSize:
+    Type: Number
+    Default: 100
+    Description: Dimensione del volume EBS (GB) per broker
+
+  IotRuleName:
+    Type: String
+    Default: ProvaIoTToMSKRule
+    Description: Nome della Topic Rule AWS IoT
+
+Resources:
+  ## VPC e Subnet
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IoT-MSK-IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  MSKSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Accesso al cluster MSK
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9092
+          ToPort: 9092
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: IoT-MSK-SG
+
+  # Subnet Pubblica 1
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: IoT-MSK-PublicSubnet1
+
+  # Subnet Pubblica 2
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: IoT-MSK-PublicSubnet2
+
+  # Route Table Pubblica
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: IoT-MSK-PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # Elastic IP per NAT Gateway
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  # NAT Gateway
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: IoT-MSK-NATGateway
+
+  # Route Table Privata
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: IoT-MSK-PrivateRouteTable
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetB
+      RouteTableId: !Ref PrivateRouteTable
+    
+  
+    ## Cluster MSK Standard
+  MSKCluster2:
+    Type: AWS::MSK::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+      KafkaVersion: !Ref KafkaVersion
+      NumberOfBrokerNodes: !Ref BrokerCount
+      BrokerNodeGroupInfo:
+        InstanceType: !Ref BrokerInstanceType
+        ClientSubnets:
+          - !Ref SubnetA
+          - !Ref SubnetB
+        SecurityGroups:
+          - !Ref MSKSecurityGroup
+        StorageInfo:
+            EBSStorageInfo:
+              VolumeSize: !Ref BrokerEBSVolumeSize
+      EncryptionInfo:
+        EncryptionInTransit:
+          ClientBroker: TLS
+          InCluster: true
+
+  ## Ruolo per ENI di AWS IoT Core (TopicRuleDestination)
+  IoTVpcDestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${IotRuleName}-VpcDestRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ENIManagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                  - ec2:CreateNetworkInterfacePermission
+                  - ec2:DescribeVpcAttribute
+                  - ec2:AttachNetworkInterface
+                Resource: '*'
+  
+Outputs:
+  MSKClusterArn:
+    Description: Arn del cluster MSK standard
+    Value: !GetAtt MSKCluster2.Arn

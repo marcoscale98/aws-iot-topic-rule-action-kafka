@@ -1,0 +1,12 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Stack per VPC + MSK Standard + AWS IoT Rule -> MSK
+ 
+Conditions:
+  HasNot: !Equals [ 'true', 'false' ]
+ 
+# dummy (null) resource, never created
+Resources:
+  NullResource:
+    Type: 'Custom::NullResource'
+    Condition: HasNot
