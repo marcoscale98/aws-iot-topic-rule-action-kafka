@@ -17,5 +17,5 @@ This guide helps you to deploy an AWS IoT Topic Rule with Kafka Action
 
 ### 3. IoT Topic Rule creation
 
-- Get bootstrap server string in the MSK section of AWS Console
+- Get bootstrap server string in the MSK section of AWS Console and use it as parameter
 - Create a new stack based on `iot-topic-rule.yaml` by AWS Console or AWS CLI
