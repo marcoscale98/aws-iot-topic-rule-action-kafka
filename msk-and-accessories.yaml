@@ -5,32 +5,32 @@ Description: >
 Parameters:
   VpcCidr:
     Type: String
-    Default: 13.0.0.0/16
+    Default: 14.0.0.0/16
     Description: CIDR block per la VPC
 
   PublicSubnet1Cidr:
     Type: String
-    Default: 13.0.2.0/24
+    Default: 14.0.2.0/24
     Description: CIDR per la Subnet Pubblica 1
 
   PublicSubnet2Cidr:
     Type: String
-    Default: 13.0.3.0/24
+    Default: 14.0.3.0/24
     Description: CIDR per la Subnet Pubblica 2
 
   PrivateSubnet1Cidr:
     Type: String
-    Default: 13.0.0.0/24
+    Default: 14.0.0.0/24
     Description: CIDR per subnet AZ1
 
   PrivateSubnet2Cidr:
     Type: String
-    Default: 13.0.1.0/24
+    Default: 14.0.1.0/24
     Description: CIDR per subnet AZ2
 
   ClusterName:
     Type: String
-    Default: ProvaIoTMskCluster
+    Default: MskCluster
     Description: Nome del cluster MSK standard
 
   KafkaTopic:
@@ -60,7 +60,7 @@ Parameters:
 
   IotRuleName:
     Type: String
-    Default: ProvaIoTToMSKRule
+    Default: IotRule
     Description: Nome della Topic Rule AWS IoT
 
   IotTopic:
@@ -282,18 +282,18 @@ Resources:
   MskLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "${ClusterName}-LogGroup"
+      LogGroupName: !Sub "${AWS::StackName}-${ClusterName}-LogGroup"
       RetentionInDays: 14
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-LogGroup"
+          Value: !Sub "${AWS::StackName}-${ClusterName}-LogGroup"
 
   ## Cluster MSK Standard
   MskCluster:
     Type: AWS::MSK::Cluster
     DependsOn: KafkaConfiguration
     Properties:
-      ClusterName: !Ref ClusterName
+      ClusterName: !Sub "${AWS::StackName}-${ClusterName}"
       KafkaVersion: !Ref KafkaVersion
       NumberOfBrokerNodes: !Ref BrokerCount
       # Configuration with auto-create topic enabled
@@ -319,15 +319,13 @@ Resources:
         EncryptionInTransit:
           ClientBroker: TLS
           InCluster: true
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-MSKCluster"
+      Tags: { Key: "Name", Value: !Sub "${AWS::StackName}-${ClusterName}"}
 
   ## Ruolo per ENI di AWS IoT Core (TopicRuleDestination)
   IoTVpcDestRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${IotRuleName}-IoTVpcDestRole"
+      RoleName: !Sub "${AWS::StackName}-${IotRuleName}-IoTVpcDestRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -387,54 +385,23 @@ Resources:
 
   IoTVpcDestination:
     Type: AWS::IoT::TopicRuleDestination
+    DependsOn:
+      - MskCluster
+      - IoTVpcDestRole
+      - VPC
+      - MSKSecurityGroup
+      - PrivateSubnet1
+      - PrivateSubnet2
     Properties:
       Status: ENABLED
       VpcProperties:
-        RoleArn: !Ref IoTVpcDestRole
+        RoleArn: !GetAtt IoTVpcDestRole.Arn
         SecurityGroups:
           - !Ref MSKSecurityGroup
         SubnetIds:
           - !Ref PrivateSubnet1
           - !Ref PrivateSubnet2
         VpcId: !Ref VPC
-
-  IotTopicRule:
-    Type: AWS::IoT::TopicRule
-    DependsOn: IoTVpcDestination
-    Properties:
-      RuleName: !Sub "${AWS::StackName}-${IotRuleName}"
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-${IotRuleName}"
-      TopicRulePayload:
-        RuleDisabled: false
-        ErrorAction:
-          Sqs:
-            RoleArn: !Ref IoTVpcDestRole
-            UseBase64: false
-            QueueUrl: !Ref SQSActionErrors
-        Description: "Topic Rule con Action Kafka e ErrorAction SQS"
-        AwsIotSqlVersion: "2016-03-23"
-        Actions:
-          - Kafka:
-              ClientProperties:
-                compression.type: "none"
-                security.protocol: "SSL"
-                value.serializer: "org.apache.kafka.common.serialization.ByteBufferSerializer"
-                ssl.keystore.password: !Sub "${get_secret(\"${AWS::StackName}-Keystore\"\
-                , \"SecretString\", \"keystorePassword\", \"${IoTVpcDestRole}\"\
-                )}"
-                acks: "1"
-                bootstrap.servers: "<da-recuperare-con-chiamata-da-CLI>"
-                ssl.keystore: "${get_secret(\"${AWS::StackName}-Keystore\", \"SecretString\"\
-                , \"keystore\", \"${IoTVpcDestRole}\"\
-                )}"
-                key.serializer: "org.apache.kafka.common.serialization.StringSerializer"
-              Topic: !Ref KafkaTopic
-              Headers: [ ]
-              DestinationArn: !Ref IoTVpcDestination
-        Sql: !Sub "SELECT * FROM ${IotTopic}"
-
 
   SQSActionErrors:
     Type: AWS::SQS::Queue
@@ -448,3 +415,27 @@ Outputs:
   MSKClusterArn:
     Description: Arn del cluster MSK standard
     Value: !GetAtt MskCluster.Arn
+  IoTVpcDestRoleArn:
+    Description: Arn del ruolo per la destinazione VPC
+    Value: !GetAtt IoTVpcDestRole.Arn
+  IoTVpcDestRoleName:
+    Description: Nome del ruolo per la destinazione VPC
+    Value: !Ref IoTVpcDestRole
+  IoTVpcDestinationArn:
+    Description: Arn della destinazione VPC
+    Value: !GetAtt IoTVpcDestination.Arn
+  SQSActionErrorsArn:
+    Description: Arn della coda SQS per gli errori
+    Value: !GetAtt SQSActionErrors.Arn
+  SQSActionErrorsUrl:
+    Description: Url della coda SQS per gli errori
+    Value: !GetAtt SQSActionErrors.QueueUrl
+  MSKSecurityGroup:
+    Description: Id del security group del cluster MSK
+    Value: !Ref MSKSecurityGroup
+  VPC:
+    Description: Id della VPC
+    Value: !Ref VPC
+  SecretArn:
+    Description: Arn of the Secret
+    Value: !Ref KeystoreSecret

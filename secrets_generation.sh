@@ -12,7 +12,7 @@
 #
 # Usa parole semplici, ogni passaggio è descritto chiaramente.
 
-echo "Benvenuto! Questo script ti aiuta a creare i segreti (keystore e truststore)"
+echo "Benvenuto! Questo script ti aiuta a creare i segreti (keystore)"
 echo "necessari per configurare la tua IoT Topic Rule con Amazon MSK."
 echo "Segui le istruzioni semplici a video per ottenere i valori pronti da incollare nel tuo template CFN."
 echo
