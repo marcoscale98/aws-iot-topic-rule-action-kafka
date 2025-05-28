@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IoT Topic Rule with  MSK action
+
+Parameters:
+  MSKClusterArn:
+    Type: String
+    Description: ARN of the MSK cluster to retrieve bootstrap servers from
+  TopicRuleName:
+    Type: String
+    Default: KafkaRule
+    Description: Name of the IoT Topic Rule to create
+  RoleArn:
+    Type: String
+    Description: IAM Role ARN that the Topic Rule will assume
+  IoTVpcDestRoleArn:
+    Type: String
+    Description: ARN of the IAM Role that the Topic Rule will assume
+  SQSActionErrorsUrl:
+    Type: String
+    Description: URL SQS for ErrorAction
+  KafkaTopic:
+    Type: String
+    Default: prova
+    Description: Topic Kafka
+  IoTVpcDestinationArn:
+    Type: String
+    Description: Arn of IOT VPC Destination
+  IotTopic:
+    Type: String
+    Description: topic to read using the Rule
+    Default: prova
+  SecretArn:
+    Type: String
+  BootstrapServers:
+    Type: String
+
+Resources:
+  IotTopicRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: !Sub "${AWS::StackName}_${TopicRuleName}"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}_${TopicRuleName}"
+      TopicRulePayload:
+        RuleDisabled: false
+        ErrorAction:
+          Sqs:
+            RoleArn: !Ref IoTVpcDestRoleArn
+            UseBase64: false
+            QueueUrl: !Ref SQSActionErrorsUrl
+        Description: "Topic Rule con Action Kafka e ErrorAction SQS"
+        AwsIotSqlVersion: "2016-03-23"
+        Actions:
+          - Kafka:
+              ClientProperties:
+                compression.type: "none"
+                security.protocol: "SSL"
+                value.serializer: "org.apache.kafka.common.serialization.ByteBufferSerializer"
+                ssl.keystore.password:
+                  Fn::Join:
+                    - ""
+                    - - '${get_secret("'
+                      - !Ref SecretArn
+                      - '", "SecretString", "keystorePassword", "'
+                      - !Ref IoTVpcDestRoleArn
+                      - '")}'
+                ssl.keystore:
+                  Fn::Join:
+                    - ""
+                    - - '${get_secret("'
+                      - !Ref SecretArn
+                      - '", "SecretString", "keystore", "'
+                      - !Ref IoTVpcDestRoleArn
+                      - '")}'
+                acks: "1"
+                bootstrap.servers: !Ref BootstrapServers
+                key.serializer: "org.apache.kafka.common.serialization.StringSerializer"
+              Topic: !Ref KafkaTopic
+              DestinationArn: !Ref IoTVpcDestinationArn
+        Sql: !Sub "SELECT * FROM ${IotTopic}"
+
+Outputs:
+  TopicRuleName:
+    Description: Name of the created or updated IoT Topic Rule
+    Value: !Ref TopicRuleName
