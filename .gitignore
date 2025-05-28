@@ -97,3 +97,4 @@ fabric.properties
 kafka*
 *.tgz
 topic_creation.sh
+.idea
