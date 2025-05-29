@@ -78,7 +78,7 @@ Resources:
                 key.serializer: "org.apache.kafka.common.serialization.StringSerializer"
               Topic: !Ref KafkaTopic
               DestinationArn: !Ref IoTVpcDestinationArn
-        Sql: !Sub "SELECT * FROM ${IotTopic}"
+        Sql: !Sub "SELECT * FROM '${IotTopic}'"
 
 Outputs:
   TopicRuleName:
